@@ -399,3 +399,38 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# ---------------------------------------------------------------------------
+# questie (Qt Bridge for C# / .NET) specifics
+# ---------------------------------------------------------------------------
+
+# Deployment output produced by the Qt Bridge build
+/dist/
+
+# Qt plugins and QML modules deployed next to the executable by windeployqt.
+# Anchored to the repo root so real source directories are never ignored.
+/Application/
+/generic/
+/iconengines/
+/imageformats/
+/networkinformation/
+/platforms/
+/qml/
+/qmltooling/
+/tls/
+
+# Qt / QML generated caches
+*.qmlc
+*.jsc
+.qmlls.ini
+
+# Qt Creator and Qt Bridge generated files
+*.pro.user
+*.pro.user.*
+*.qmlproject.user
+*.qmlproject.user.*
+CMakeLists.txt.user*
+.qtc_clangd/
+
+# Note: adb/ holds the bundled Android platform-tools and is committed on
+# purpose (see the <Content Include="adb\**"> item in questie.csproj).
