@@ -26,7 +26,7 @@ namespace questie.Services
 
         static FirmwareService()
         {
-            Http.DefaultRequestHeaders.UserAgent.ParseAdd("Questie/1.0");
+            Http.DefaultRequestHeaders.UserAgent.ParseAdd($"Questie/{Program.Version}");
         }
 
         public void ClearLog() => Log = "";
@@ -47,22 +47,189 @@ namespace questie.Services
             Task.Run(() => RunGuarded(() => WipeDeviceAsync(serial, adbPath, fastbootPath, true, true, Cts().Token)));
         }
 
+        public void SkipNux(string serial, string adbPath, string lockState)
+        {
+            if (Busy) return;
+            if (BlockedByLock(lockState, "skip nux")) return;
+            StartOperation("skipping nux...");
+            AppendLog("skipping nux");
+            Task.Run(() => RunGuarded(() => SkipNuxAsync(serial, adbPath, Cts().Token)));
+        }
+
+        public void SkipNuxOlderFw(string serial, string adbPath, string lockState)
+        {
+            if (Busy) return;
+            if (BlockedByLock(lockState, "skip nux")) return;
+            StartOperation("skipping nux (older fw)...");
+            AppendLog("skipping nux (older fw)");
+            Task.Run(() => RunGuarded(() => SkipNuxOlderFwAsync(serial, adbPath, Cts().Token)));
+        }
+
+        // quest 1 only: fastboot oem commands that let adbd run as root on retail builds.
+        public void UnlockRoot(string serial, string adbPath, string fastbootPath)
+        {
+            if (Busy) return;
+            StartOperation("unlocking adb root...");
+            AppendLog("quest 1: allowing adb root on retail");
+            Task.Run(() => RunGuarded(() => FastbootOemAsync(serial, adbPath, fastbootPath,
+            [
+                "oem set-appended-cmdline androidboot.adb.rootable=1",
+                "oem set-enable-adb-on-retail 1",
+            ], "adb root unlocked!", Cts().Token)));
+        }
+
+        public void LockRoot(string serial, string adbPath, string fastbootPath)
+        {
+            if (Busy) return;
+            StartOperation("locking adb root...");
+            AppendLog("quest 1: disallowing adb root on retail");
+            Task.Run(() => RunGuarded(() => FastbootOemAsync(serial, adbPath, fastbootPath,
+            [
+                "oem set-appended-cmdline",
+                "oem set-enable-adb-on-retail 0",
+            ], "adb root locked!", Cts().Token)));
+        }
+
+        private async Task FastbootOemAsync(
+            string serial, string adb, string fastboot, string[] commands, string doneStatus, CancellationToken ct)
+        {
+            await EnsureFastbootAsync(serial, adb, fastboot, ct).ConfigureAwait(false);
+
+            foreach (var cmd in commands)
+            {
+                Status = $"running fastboot {cmd}...";
+                AppendLog($"fastboot {cmd}");
+                var r = await ToolRunner.RunAsync(fastboot, cmd, 60000, AppendOutput, ct).ConfigureAwait(false);
+                if (r.ExitCode != 0)
+                    throw new InvalidOperationException($"fastboot {cmd} failed. see log.");
+            }
+
+            Status = doneStatus;
+            AppendLog("done.");
+        }
+
+        // reboots to bootloader and waits when the headset isn't already in fastboot mode.
+        private async Task EnsureFastbootAsync(string? serial, string adb, string fastboot, CancellationToken ct)
+        {
+            if (await DeviceTools.FastbootDeviceSerialAsync(fastboot, ct).ConfigureAwait(false) is not null)
+            {
+                AppendLog("headset is already in fastboot mode.");
+                return;
+            }
+
+            Status = "rebooting to fastboot...";
+            var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
+            AppendLog("rebooting to fastboot...");
+            await ToolRunner.RunAsync(adb, $"{serialArg}reboot bootloader", 60000, AppendOutput, ct).ConfigureAwait(false);
+            if (!await DeviceTools.WaitForFastbootAsync(fastboot, ct).ConfigureAwait(false))
+                throw new TimeoutException("timed out while waiting for device. hold vol- and power to put the headset in fastboot.");
+        }
+
+        // all of these need adb root, which only works on unlocked devices
+        private bool BlockedByLock(string lockState, string action)
+        {
+            if (string.Equals(lockState, "unlocked", StringComparison.OrdinalIgnoreCase)) return false;
+            Status = $"{action} needs an unlocked bootloader";
+            AppendLog($"the bootloader is {(string.IsNullOrWhiteSpace(lockState) ? "unknown" : lockState)}, adb root won't work while it's locked.");
+            return true;
+        }
+
+        private async Task EnsureAdbRootAsync(string serial, string adb, CancellationToken ct)
+        {
+            var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
+
+            if (await DeviceTools.IsAdbRootAsync(adb, serial, ct).ConfigureAwait(false))
+            {
+                AppendLog("adbd is already running as root");
+                return;
+            }
+
+            Status = "running adb root...";
+            AppendLog("running adb root...");
+            var root = await ToolRunner.RunAsync(adb, $"{serialArg}root", 60000, AppendOutput, ct).ConfigureAwait(false);
+            if (root.ExitCode != 0 || root.Output.Contains("cannot run as root", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("adb root failed. the headset must be running a debuggable build (and be unlocked).");
+
+            Status = "waiting for adb to reconnect...";
+            if (!await DeviceTools.WaitForDeviceAsync(adb, ct, 60).ConfigureAwait(false))
+                throw new TimeoutException("the headset did not come back after adb root.");
+        }
+
+        private async Task SkipNuxAsync(string serial, string adb, CancellationToken ct)
+        {
+            var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
+            await EnsureAdbRootAsync(serial, adb, ct).ConfigureAwait(false);
+
+            Status = "sending skip nux command...";
+            const string skipCmd =
+                "shell am startservice -a nux.ota.SKIP_NUX " +
+                "-n com.oculus.nux.ota/com.oculus.nux.ota.NuxOtaIntentService --ez REBOOT true";
+            AppendLog("sending skip nux intent...");
+            var skip = await ToolRunner.RunAsync(adb, $"{serialArg}{skipCmd}", 60000, AppendOutput, ct).ConfigureAwait(false);
+
+            var serviceMissing = skip.Output.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                || skip.Output.Contains("no service started", StringComparison.OrdinalIgnoreCase);
+
+            if (serviceMissing)
+            {
+                AppendLog("the nux ota service wasn't found, trying method 2");
+                Status = "applying nux skip flags...";
+                const string flagsCmd =
+                    "shell \"settings put global device_provisioned 1; " +
+                    "settings put secure user_setup_complete 1; " +
+                    "settings put secure finished_monterey_nux 1; " +
+                    "settings put global finished_monterey_nux 1; " +
+                    "settings put secure dnux_complete 1; " +
+                    "settings put global dnux_complete 1; " +
+                    "svc power reboot\"";
+                var flags = await ToolRunner.RunAsync(adb, $"{serialArg}{flagsCmd}", 60000, AppendOutput, ct).ConfigureAwait(false);
+                if (flags.ExitCode != 0)
+                    AppendLog($"settings command exited with code {flags.ExitCode}.");
+            }
+            else if (skip.ExitCode != 0)
+            {
+                throw new InvalidOperationException("could not send the skip nux command. see log.");
+            }
+
+            Status = "nux skip sent! the headset will reboot.";
+            AppendLog("done.");
+        }
+
+        private async Task SkipNuxOlderFwAsync(string serial, string adb, CancellationToken ct)
+        {
+            var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
+            await EnsureAdbRootAsync(serial, adb, ct).ConfigureAwait(false);
+
+            Status = "writing nux identity prefs...";
+            AppendLog("writing nux identity prefs...");
+
+            const string xmlFormat =
+                "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?>\\n" +
+                "<map>\\n" +
+                "<boolean name=\"login_status\" value=\"true\" />\\n" +
+                "<boolean name=\"login_status_meta\" value=\"true\" />\\n" +
+                "<boolean name=\"nux_complete\" value=\"true\" />\\n" +
+                "<boolean name=\"vr_ready\" value=\"true\" />\\n" +
+                "<boolean name=\"headset_claimed_by_user\" value=\"true\" />\\n" +
+                "<string name=\"nux_status\">NUX_COMPLETE</string>\\n" +
+                "<string name=\"nux_flow\">TWILIGHT</string>\\n" +
+                "</map>\\n";
+
+            var script = $"D=/data/user_de/0/com.oculus.companion.server/shared_prefs; F=$D/com.oculus.companion.identity.xml; printf '{xmlFormat}' > $F; chown $(stat -c %u:%g $D) $F; restorecon $F; reboot";
+
+            var escaped = script.Replace("\"", "\\\"");
+            var r = await ToolRunner.RunAsync(adb, $"{serialArg}shell \"{escaped}\"", 60000, AppendOutput, ct).ConfigureAwait(false);
+            if (r.ExitCode != 0)
+                AppendLog($"command exited with code {r.ExitCode}.");
+
+            Status = "nux skip (older fw) sent! the headset will reboot.";
+            AppendLog("done.");
+        }
+
         private async Task WipeDeviceAsync(
             string serial, string adb, string fastboot, bool eraseUserdata, bool eraseCache, CancellationToken ct)
         {
-            if (await DeviceTools.FastbootDeviceSerialAsync(fastboot, ct).ConfigureAwait(false) is null)
-            {
-                Status = "rebooting to fastboot...";
-                var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
-                AppendLog("rebooting to fastboot...");
-                await ToolRunner.RunAsync(adb, $"{serialArg}reboot bootloader", 60000, AppendOutput, ct).ConfigureAwait(false);
-                if (!await DeviceTools.WaitForFastbootAsync(fastboot, ct).ConfigureAwait(false))
-                    throw new TimeoutException("timed out while waiting for device. hold vol- and power to put the headset in fastboot.");
-            }
-            else
-            {
-                AppendLog("headset is already in fastboot mode.");
-            }
+            await EnsureFastbootAsync(serial, adb, fastboot, ct).ConfigureAwait(false);
 
             if (eraseUserdata)
             {
@@ -101,7 +268,7 @@ namespace questie.Services
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                req.Headers.UserAgent.ParseAdd("Questie/1.0");
+                req.Headers.UserAgent.ParseAdd($"Questie/{Program.Version}");
                 using var resp = Http.Send(req, HttpCompletionOption.ResponseContentRead);
                 resp.EnsureSuccessStatusCode();
                 return resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
@@ -125,7 +292,7 @@ namespace questie.Services
                 return;
             }
             var parts = eraseUserdata ? "userdata" : "";
-            if (eraseCache) parts += (parts.Length > 0 ? " + " : "") + "cache";
+            if (eraseCache) parts += $"{(parts.Length > 0 ? " + " : "")}cache";
             AppendLog($"will erase {parts} before installing.");
         }
 
@@ -180,8 +347,8 @@ namespace questie.Services
             }
             catch (Exception ex)
             {
-                Status = "failed: " + ex.Message;
-                AppendLog("error: " + ex.Message);
+                Status = $"failed: {ex.Message}";
+                AppendLog($"error: {ex.Message}");
             }
             finally
             {
@@ -192,12 +359,12 @@ namespace questie.Services
 
         private void AppendLog(string line)
         {
-            var next = string.IsNullOrEmpty(Log) ? line : Log + "\n" + line;
+            var next = string.IsNullOrEmpty(Log) ? line : $"{Log}\n{line}";
             if (next.Length > 30000) next = next[^30000..];
             Log = next;
         }
 
-        private void AppendOutput(string line) => AppendLog("  " + line);
+        private void AppendOutput(string line) => AppendLog($"  {line}");
 
         private static string TempDir(params string[] parts)
         {
@@ -214,7 +381,7 @@ namespace questie.Services
                 if (!string.IsNullOrWhiteSpace(name)) return name;
             }
             catch { }
-            return "firmware_" + Guid.NewGuid().ToString("N")[..8] + ".zip";
+            return $"firmware_{Guid.NewGuid().ToString("N")[..8]}.zip";
         }
 
         private async Task<string> DownloadAsync(string url, string destDir, string? expectedSha256, CancellationToken ct)
@@ -226,8 +393,8 @@ namespace questie.Services
                 try { File.Delete(dest); } catch { }
             }
 
-            Status = "downloading " + Path.GetFileName(dest) + "...";
-            AppendLog("downloading: " + url);
+            Status = $"downloading {Path.GetFileName(dest)}...";
+            AppendLog($"downloading: {url}");
             using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
             var total = resp.Content.Headers.ContentLength;
@@ -362,15 +529,7 @@ namespace questie.Services
             AppendLog("erase requested!");
 
             if (!alreadyInFastboot)
-            {
-                var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
-                AppendLog("rebooting to fastboot to erase before installing...");
-                var toBootloader = await ToolRunner.RunAsync(adb, $"{serialArg}reboot bootloader", 60000, AppendOutput, ct).ConfigureAwait(false);
-                if (toBootloader.ExitCode != 0)
-                    throw new InvalidOperationException("adb reboot bootloader failed!");
-                if (!await DeviceTools.WaitForFastbootAsync(fastboot, ct).ConfigureAwait(false))
-                    throw new TimeoutException("no fastboot device appeared. check the headset.");
-            }
+                await EnsureFastbootAsync(serial, adb, fastboot, ct).ConfigureAwait(false);
 
             await FastbootEraseAsync(fastboot, eraseUserdata, eraseCache, ct).ConfigureAwait(false);
 
@@ -393,8 +552,8 @@ namespace questie.Services
             var zip = await DownloadAsync(a.url, TempDir("factory"), null, ct).ConfigureAwait(false);
 
             Status = "unpacking factory firmware...";
-            var dir = TempDir("factory", "unpacked_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
-            AppendLog("extracting to " + dir);
+            var dir = TempDir("factory", $"unpacked_{DateTime.Now.ToString("yyyyMMdd_HHmmss")}");
+            AppendLog($"extracting to {dir}");
             ZipFile.ExtractToDirectory(zip, dir, overwriteFiles: true);
 
             var system = FindImage(dir, "system.img");
@@ -403,23 +562,9 @@ namespace questie.Services
             if (system == null || boot == null || modem == null)
                 throw new InvalidOperationException(
                     "factory zip did not contain system.img, boot.img and modem.img. this is bad. ");
-            AppendLog("found:\n  " + system + "\n  " + boot + "\n  " + modem);
+            AppendLog($"found:\n  {system}\n  {boot}\n  {modem}");
 
-            Status = "rebooting to bootloader...";
-            var serialArg = string.IsNullOrWhiteSpace(a.serial) ? "" : $"-s {a.serial} ";
-            if (await DeviceTools.FastbootDeviceSerialAsync(a.fastboot, ct).ConfigureAwait(false) is not null)
-            {
-                AppendLog("device is already in fastboot");
-            }
-            else
-            {
-                var reboot = await ToolRunner.RunAsync(a.adb, $"{serialArg}reboot bootloader", 60000, AppendOutput, ct).ConfigureAwait(false);
-                if (reboot.ExitCode != 0) throw new InvalidOperationException("adb reboot bootloader failed.");
-            }
-
-            Status = "waiting for fastboot...";
-            if (!await DeviceTools.WaitForFastbootAsync(a.fastboot, ct).ConfigureAwait(false))
-                throw new TimeoutException("no fastboot device appeared. put theheadset on.");
+            await EnsureFastbootAsync(a.serial, a.adb, a.fastboot, ct).ConfigureAwait(false);
 
             await FastbootFlashAsync(a.fastboot, "system", system, ct).ConfigureAwait(false);
             await FastbootFlashAsync(a.fastboot, "boot", boot, ct).ConfigureAwait(false);
@@ -467,12 +612,6 @@ namespace questie.Services
             var r = await ToolRunner.RunAsync(fastboot, $"flash {partition} {ToolRunner.Quote(image)}", 900000, AppendOutput, ct).ConfigureAwait(false);
             if (r.ExitCode != 0) throw new InvalidOperationException($"fastboot flash {partition} failed. probably not the best idea to reboot right now.");
             AppendLog($"{partition} flashed.");
-        }
-
-        private static async Task WaitForFastbootAsync(string fastboot, CancellationToken ct)
-        {
-            if (!await DeviceTools.WaitForFastbootAsync(fastboot, ct).ConfigureAwait(false))
-                throw new TimeoutException("no fastboot device appeared. hold vol down and power to do it manually");
         }
     }
 }

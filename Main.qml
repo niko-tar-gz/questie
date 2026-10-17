@@ -39,6 +39,7 @@ ApplicationWindow {
     property string pendingSha: ""
     property bool pendingIsFactory: false
     property bool pendingIsDowngrade: false
+    property string pendingNuxSkip: ""
 
     ListModel { id: fwModel }
 
@@ -228,6 +229,21 @@ ApplicationWindow {
             factoryDialog.open();
         else
             otaDialog.open();
+    }
+
+    // skipping nux can leave a headset stuck on a black screen unless the companion device key
+    // is set first, so warn before running it (with a "don't show again" opt-out).
+    function nuxSkip(kind) {
+        if (AppSettings.skipNuxWarningDontShow) { runNuxSkip(kind); return; }
+        pendingNuxSkip = kind;
+        nuxWarningDialog.open();
+    }
+
+    function runNuxSkip(kind) {
+        if (kind === "older")
+            Firmware.skipNuxOlderFw(Device.serial, Device.adbPath, Device.lockState);
+        else
+            Firmware.skipNux(Device.serial, Device.adbPath, Device.lockState);
     }
 
     RowLayout {
@@ -486,10 +502,34 @@ ApplicationWindow {
                         onClicked: Device.reboot("bootloader")
                     }
                     Button {
+                        text: "unlock root"
+                        Layout.fillWidth: true
+                        enabled: Device.connected && !Firmware.busy && !Device.busy && Device.codename === "monterey"
+                        onClicked: Firmware.unlockRoot(Device.serial, Device.adbPath, Device.fastbootPath)
+                    }
+                    Button {
+                        text: "lock root"
+                        Layout.fillWidth: true
+                        enabled: Device.connected && !Firmware.busy && !Device.busy && Device.codename === "monterey"
+                        onClicked: Firmware.lockRoot(Device.serial, Device.adbPath, Device.fastbootPath)
+                    }
+                    Button {
                         text: "clear cache"
                         Layout.fillWidth: true
                         enabled: Device.connected && !Firmware.busy && !Device.busy
                         onClicked: Firmware.clearCache(Device.serial, Device.adbPath, Device.fastbootPath)
+                    }
+                    Button {
+                        text: "skip nux"
+                        Layout.fillWidth: true
+                        enabled: Device.connected && !Firmware.busy && !Device.busy && Device.lockState === "unlocked"
+                        onClicked: nuxSkip("nux")
+                    }
+                    Button {
+                        text: "skip nux (older fw)"
+                        Layout.fillWidth: true
+                        enabled: Device.connected && !Firmware.busy && !Device.busy && Device.lockState === "unlocked"
+                        onClicked: nuxSkip("older")
                     }
                     Button {
                         id: wipeBtn
@@ -683,7 +723,7 @@ ApplicationWindow {
                             font.bold: true
                         }
                         Label {
-                            text: "v1.0.0"
+                            text: "v" + App.version
                             font.pixelSize: 16
                             color: palette.placeholderText
                         }
@@ -708,6 +748,7 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: otaDialog
         title: "flash update?"
         modal: true
         anchors.centerIn: parent
@@ -766,5 +807,46 @@ ApplicationWindow {
             }
         }
         onAccepted: Firmware.flashFactory(pendingUrl, Device.serial, Device.adbPath, Device.fastbootPath, eraseFlags())
+    }
+
+    Dialog {
+        id: nuxWarningDialog
+        title: "before you skip nux"
+        modal: true
+        anchors.centerIn: parent
+        ColumnLayout {
+            width: 420
+            spacing: 8
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: "make sure to set device key in private quest, otherwise you'll probably get stuck on a black screen."
+            }
+            Button {
+                text: "download private quest"
+                Layout.fillWidth: true
+                onClicked: Qt.openUrlExternally("https://xdaforums.com/t/app-5-0-private-quest-vr-headset-management-tool.4695491/")
+            }
+            CheckBox {
+                id: nuxDontShowAgain
+                text: "don't show again"
+            }
+        }
+        footer: RowLayout {
+            Item { Layout.fillWidth: true }
+            Button {
+                text: "continue"
+                onClicked: nuxWarningDialog.accept()
+            }
+            Button {
+                text: "cancel"
+                onClicked: nuxWarningDialog.reject()
+            }
+        }
+        onOpened: nuxDontShowAgain.checked = false
+        onAccepted: {
+            if (nuxDontShowAgain.checked) AppSettings.skipNuxWarningDontShow = true;
+            runNuxSkip(pendingNuxSkip);
+        }
     }
 }

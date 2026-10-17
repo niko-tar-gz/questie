@@ -45,7 +45,7 @@ namespace questie.Services
             try
             {
                 var baseDir = AppContext.BaseDirectory;
-                var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
+                var exe = OperatingSystem.IsWindows() ? $"{name}.exe" : name;
                 foreach (var candidate in new[]
                          {
                              Path.Combine(baseDir, "adb", exe),
@@ -57,7 +57,7 @@ namespace questie.Services
                 }
             }
             catch { }
-            return OperatingSystem.IsWindows() ? name + ".exe" : name;
+            return OperatingSystem.IsWindows() ? $"{name}.exe" : name;
         }
 
         public bool Connected { get => _connected; private set => Set(ref _connected, value); }
@@ -74,6 +74,7 @@ namespace questie.Services
         public bool Busy { get => _busy; private set => Set(ref _busy, value); }
         public string AdbPath { get => _adbPath; set => Set(ref _adbPath, string.IsNullOrWhiteSpace(value) ? ResolveTool("adb") : value.Trim()); }
         public string FastbootPath { get => _fastbootPath; set => Set(ref _fastbootPath, string.IsNullOrWhiteSpace(value) ? ResolveTool("fastboot") : value.Trim()); }
+
         public string ArchiveUrl
         {
             get => CodenameToArchive.TryGetValue(Codename, out var url) ? url : "";
@@ -97,7 +98,7 @@ namespace questie.Services
                 catch (Exception ex)
                 {
                     Connected = false;
-                    Status = "detection failed: " + ex.Message;
+                    Status = $"detection failed: {ex.Message}";
                 }
                 finally
                 {
@@ -119,12 +120,12 @@ namespace questie.Services
                 try
                 {
                     var prefix = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
-                    var r = await ToolRunner.RunAsync(adb, prefix + arg, 60000, null, CancellationToken.None).ConfigureAwait(false);
+                    var r = await ToolRunner.RunAsync(adb, $"{prefix}{arg}", 60000, null, CancellationToken.None).ConfigureAwait(false);
                     Status = r.ExitCode == 0 ? "reboot command sent!" : "reboot failed!";
                 }
                 catch (Exception ex)
                 {
-                    Status = "reboot failed: " + ex.Message;
+                    Status = $"reboot failed: {ex.Message}";
                 }
                 finally
                 {
@@ -143,7 +144,7 @@ namespace questie.Services
             }
             catch (Exception ex)
             {
-                SetDisconnected("adb not available: " + ex.Message);
+                SetDisconnected($"adb not available: {ex.Message}");
                 return;
             }
 
@@ -161,13 +162,14 @@ namespace questie.Services
                         fbProps["ro.product.name"] = product;
                         fbProps["ro.product.model"] = product;
                     }
-                    var fbCodename = ResolveCodename(fbProps);
+                    var fbSerialNo = vars.TryGetValue("serialno", out var sn) ? sn.Trim() : "";
+                    var fbCodename = ApplyEmulatorOverride(ResolveCodename(fbProps), fbSerialNo);
                     Connected = true;
-                    HeadsetName = CodenameToName.TryGetValue(fbCodename, out var fbName) ? fbName + " (fastboot)" : "a headset in fastboot mode";
+                    HeadsetName = CodenameToName.TryGetValue(fbCodename, out var fbName) ? $"{fbName} (fastboot)" : "a headset in fastboot mode";
                     Codename = fbCodename;
                     FirmwareIncremental = "";
                     FirmwareVersion = "";
-                    Serial = vars.TryGetValue("serialno", out var sn) ? sn.Trim() : "";
+                    Serial = fbSerialNo;
                     SerialRevealed = false;
                     LockState = ResolveFastbootLockState(vars);
                     if (LockState == "unknown")
@@ -188,7 +190,7 @@ namespace questie.Services
             Connected = true;
 
             var props = await ReadPropsAsync(adb, serial, ct).ConfigureAwait(false);
-            var codename = ResolveCodename(props);
+            var codename = ApplyEmulatorOverride(ResolveCodename(props), serial);
             Codename = codename;
             HeadsetName = CodenameToName.TryGetValue(codename, out var name) ? name : "unknown headset";
             FirmwareIncremental = props.TryGetValue("ro.build.version.incremental", out var inc) ? inc.Trim() : "";
@@ -251,6 +253,12 @@ namespace questie.Services
             }
             return result;
         }
+
+        // easter egg
+        private static string ApplyEmulatorOverride(string codename, string? serial)
+            => serial is not null && serial.Contains("emulator", StringComparison.OrdinalIgnoreCase)
+                ? "seiku"
+                : codename;
 
         internal static string ResolveCodename(Dictionary<string, string> props)
         {
@@ -339,12 +347,12 @@ namespace questie.Services
         {
             var dir = Path.Combine(Path.GetTempPath(), "questie", "img");
             Directory.CreateDirectory(dir);
-            var file = Path.Combine(dir, name + ".png");
+            var file = Path.Combine(dir, $"{name}.png");
             if (!new FileInfo(file).Exists || new FileInfo(file).Length == 0)
             {
                 var asm = Assembly.GetExecutingAssembly();
                 var resource = asm.GetManifestResourceNames()
-                    .FirstOrDefault(n => n.EndsWith(name + ".png", StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(n => n.EndsWith($"{name}.png", StringComparison.OrdinalIgnoreCase));
                 if (resource is null && fallbackToUnknown)
                     resource = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith("unknown.png", StringComparison.OrdinalIgnoreCase));
                 if (resource is null) return "";

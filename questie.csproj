@@ -48,8 +48,14 @@
     <Content Include="Resources\logo.png" Link="logo.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="adb\**">
+    <Content Include="adb\**"
+             Condition="'$(QtBridgeTemplateRid)' == 'win-x64' or '$(QtBridgeTemplateRid)' == 'win-arm64'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="adb-linux\**"
+             Condition="'$(QtBridgeTemplateRid)' == 'linux-x64' or '$(QtBridgeTemplateRid)' == 'linux-arm64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>adb\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
 

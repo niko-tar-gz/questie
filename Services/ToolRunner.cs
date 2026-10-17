@@ -65,6 +65,6 @@ namespace questie.Services
             }
         }
 
-        public static string Quote(string path) => "\"" + path.Replace("\"", "") + "\"";
+        public static string Quote(string path) => $"\"{path.Replace("\"", "")}\"";
     }
 }

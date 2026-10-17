@@ -37,6 +37,17 @@ namespace questie.Services
             return list;
         }
 
+        public static async Task<bool> IsAdbRootAsync(string adb, string? serial, CancellationToken ct)
+        {
+            try
+            {
+                var serialArg = string.IsNullOrWhiteSpace(serial) ? "" : $"-s {serial} ";
+                var r = await ToolRunner.RunAsync(adb, $"{serialArg}shell id -u", 15000, null, ct).ConfigureAwait(false);
+                return r.ExitCode == 0 && r.Output.Trim() == "0";
+            }
+            catch { return false; }
+        }
+
         public static async Task<string?> FastbootDeviceSerialAsync(string fastboot, CancellationToken ct)
         {
             try

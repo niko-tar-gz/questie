@@ -11,6 +11,9 @@ namespace questie
 {
     public class Program
     {
+        // single source of truth for the app version
+        public const string Version = "1.1.0";
+
         internal static void Main(string[] args)
         {
 
