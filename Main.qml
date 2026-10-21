@@ -98,6 +98,7 @@ ApplicationWindow {
         if (Device.codename === "monterey") {
             fwModel.append({
                 incremental: "2135610041500000",
+                release: "",
                 version: "factory firmware (not an ota)",
                 runtime: "",
                 buildDate: "",
@@ -140,6 +141,25 @@ ApplicationWindow {
         // this tolerates both the old fully-closed markup and the current
         // minimized markup (attribute order changes, unquoted attrs, no </td>).
         var rows = html.split(/<tr[^>]*>/);
+
+        // the archive gained a "release" column, which shifted every other
+        // value by one. map columns by their header label so future column
+        // additions/reorders don't break the parser again.
+        var headers = [];
+        var head = /<thead[^>]*>([\s\S]*?)<tbody/i.exec(html);
+        if (head) {
+            var ths = head[1].split(/<th[^>]*>/).slice(1);
+            for (var h = 0; h < ths.length; h++)
+                headers.push(ths[h].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().toLowerCase());
+        }
+        function column(names, fallback) {
+            for (var n = 0; n < names.length; n++) {
+                var idx = headers.indexOf(names[n]);
+                if (idx !== -1) return idx;
+            }
+            return fallback;
+        }
+
         // skip anything already in the model (overlapping reloads, repeated rows).
         var seen = {};
         for (var s = 0; s < fwModel.count; s++)
@@ -159,17 +179,28 @@ ApplicationWindow {
             if (cells.length < 2) continue;
             if (incremental === "" || seen[incremental]) continue;
             seen[incremental] = true;
-            var version = cells[1] || "";
+            // fallbacks keep the old six-column layout working if the header
+            // can't be read for some reason.
+            var wide = cells.length >= 7;
+            var release = cells[column(["release"], wide ? 1 : -1)] || "";
+            var version = cells[column(["version"], wide ? 2 : 1)] || "";
+            var runtime = cells[column(["runtime version", "runtime"], wide ? 3 : 2)] || "";
+            var buildDate = cells[column(["build date", "date"], wide ? 4 : 3)] || "";
+            var fingerprint = cells[column(["fingerprint"], wide ? 5 : 4)] || "";
+            var sha256 = cells[column(["sha-256", "sha256"], wide ? 6 : 5)] || "";
+            var label = release !== "" ? release : version;
+            if (label !== "" && !/^v/i.test(label)) label = "v" + label;
             fwModel.append({
                 incremental: incremental,
+                release: release,
                 version: version,
-                runtime: cells[2] || "",
-                buildDate: cells[3] || "",
-                fingerprint: cells[4] || "",
-                sha256: cells[5] || "",
+                runtime: runtime,
+                buildDate: buildDate,
+                fingerprint: fingerprint,
+                sha256: sha256,
                 url: url,
                 isFactory: false,
-                display: "v" + version + "  (" + incremental + ")"
+                display: label !== "" ? label + "  (" + incremental + ")" : incremental
             });
             count++;
         }
@@ -181,6 +212,7 @@ ApplicationWindow {
                 var f = fwModel.get(i);
                 var fRow = {
                     incremental: f.incremental,
+                    release: f.release,
                     version: f.version,
                     runtime: f.runtime,
                     buildDate: f.buildDate,
@@ -358,8 +390,9 @@ ApplicationWindow {
                             if (!e) return fwMessage !== "" ? fwMessage : "no version selected.";
                             if (e.isFactory) return "initial factory image";
                             var s = "incremental " + e.incremental;
-                            if (e.buildDate !== "") s += "  -  " + e.buildDate;
+                            if (e.version !== "") s += "  -  " + e.version;
                             if (e.runtime !== "") s += "\nruntime " + e.runtime;
+                            if (e.buildDate !== "") s += "\n" + e.buildDate;
                             return s;
                         }
                         color: palette.placeholderText
