@@ -14,6 +14,7 @@
 # ✨ so, what does it do?
 questie allows you to upgade and downgrade firmware, simple as that.
 i will probably add more things that it can do at some point (e.g root, bootloader unlock) but for now, only firmware swapping
+it can also help with some things such as skipping FirstTimeNux
 
 # 🛠 how to build
 you need to set up [qtbridge-csharp](https://github.com/qt/qtbridge-csharp)
