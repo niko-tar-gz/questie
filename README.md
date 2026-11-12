@@ -33,13 +33,4 @@ a single self-extracting executable in `dist/`.
 ./build-launcher.sh
 ```
 
-the version is read from `Program.cs` (`Program.Version`), so there is a single
-place to bump it. on first launch the launcher unpacks the app to
-`%LOCALAPPDATA%\questie\app` (windows) or `~/.local/share/questie/app` (linux)
-and writes an `app.ver` file next to the app. it only unpacks again when that
-version changes, or when `app.ver` is missing.
-
-> the packed app still needs the .net 10 runtime installed. this is a
-> limitation of the qt bridge host, which always loads the machine-wide runtime.
-
-the launcher source lives in [`launcher/`](launcher).
+this is so you can run just one file and it has adb, etc embedded
